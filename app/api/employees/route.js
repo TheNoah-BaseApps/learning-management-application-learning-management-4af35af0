@@ -76,13 +76,27 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch (parseError) {
+      console.error('Error parsing request body:', parseError);
+      return NextResponse.json(
+        { success: false, error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
+
     const {
       user_id,
       employee_id,
       employee_name,
+      first_name,
+      last_name,
+      email,
       department,
       designation,
+      role,
       date_of_joining,
       contact_number,
       email_address,
@@ -90,64 +104,202 @@ export async function POST(request) {
       registration_status = 'Pending'
     } = body;
 
-    // Validate required fields
-    const validation = validateEmployeeId(employee_id);
-    if (!validation.valid) {
-      return NextResponse.json({ success: false, error: validation.error }, { status: 400 });
+    // Validate required fields with detailed error messages
+    const requiredFields = [];
+
+    // Check for first_name
+    if (!first_name || typeof first_name !== 'string' || first_name.trim() === '') {
+      requiredFields.push('first_name');
     }
 
-    if (!validateEmail(email_address)) {
-      return NextResponse.json({ success: false, error: 'Invalid email address' }, { status: 400 });
+    // Check for last_name
+    if (!last_name || typeof last_name !== 'string' || last_name.trim() === '') {
+      requiredFields.push('last_name');
     }
 
-    const nameValidation = validateRequired(employee_name, 'Employee name');
-    if (!nameValidation.valid) {
-      return NextResponse.json({ success: false, error: nameValidation.error }, { status: 400 });
+    // Check for email
+    const emailField = email || email_address;
+    if (!emailField || typeof emailField !== 'string' || emailField.trim() === '') {
+      requiredFields.push('email');
     }
 
-    // Check for duplicate employee ID
-    const existingEmployee = await query(
-      'SELECT id FROM employees WHERE employee_id = $1',
-      [employee_id]
-    );
+    // Check for department
+    if (!department || typeof department !== 'string' || department.trim() === '') {
+      requiredFields.push('department');
+    }
 
-    if (existingEmployee.rows.length > 0) {
+    // Check for role
+    if (!role || typeof role !== 'string' || role.trim() === '') {
+      requiredFields.push('role');
+    }
+
+    if (requiredFields.length > 0) {
       return NextResponse.json(
-        { success: false, error: 'Employee ID already exists' },
-        { status: 409 }
+        { 
+          success: false, 
+          error: `Missing or invalid required fields: ${requiredFields.join(', ')}`,
+          missingFields: requiredFields
+        },
+        { status: 400 }
       );
     }
 
-    const result = await query(
-      `INSERT INTO employees (
-        id, user_id, employee_id, employee_name, department, designation,
-        date_of_joining, contact_number, email_address, employment_type,
-        registration_status, created_at
-      ) VALUES (
-        gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()
-      ) RETURNING *`,
-      [
-        user_id || null,
-        employee_id,
-        employee_name,
-        department,
-        designation,
-        date_of_joining,
-        contact_number,
-        email_address,
-        employment_type,
-        registration_status
-      ]
-    );
+    // Validate employee_id if provided
+    if (employee_id) {
+      const validation = validateEmployeeId(employee_id);
+      if (!validation.valid) {
+        return NextResponse.json(
+          { success: false, error: `Invalid employee_id: ${validation.error}` },
+          { status: 400 }
+        );
+      }
+    }
 
-    return NextResponse.json(
-      { success: true, data: result.rows[0], message: 'Employee created successfully' },
-      { status: 201 }
-    );
+    // Validate email format
+    const finalEmail = (email || email_address).trim().toLowerCase();
+    if (!validateEmail(finalEmail)) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid email address format' },
+        { status: 400 }
+      );
+    }
+
+    // Validate employee_name if provided
+    const finalEmployeeName = employee_name || `${first_name.trim()} ${last_name.trim()}`;
+    const nameValidation = validateRequired(finalEmployeeName, 'Employee name');
+    if (!nameValidation.valid) {
+      return NextResponse.json(
+        { success: false, error: nameValidation.error },
+        { status: 400 }
+      );
+    }
+
+    try {
+      // Check for duplicate employee ID
+      if (employee_id) {
+        const existingEmployeeById = await query(
+          'SELECT id FROM employees WHERE employee_id = $1',
+          [employee_id]
+        );
+
+        if (existingEmployeeById.rows.length > 0) {
+          return NextResponse.json(
+            { success: false, error: 'Employee ID already exists' },
+            { status: 409 }
+          );
+        }
+      }
+
+      // Check for duplicate email address
+      const existingEmployeeByEmail = await query(
+        'SELECT id FROM employees WHERE LOWER(email_address) = $1 OR LOWER(email) = $1',
+        [finalEmail]
+      );
+
+      if (existingEmployeeByEmail.rows.length > 0) {
+        return NextResponse.json(
+          { success: false, error: 'Email address already exists' },
+          { status: 409 }
+        );
+      }
+
+      // Insert new employee with proper NULL handling
+      const result = await query(
+        `INSERT INTO employees (
+          id,
+          user_id,
+          employee_id,
+          employee_name,
+          first_name,
+          last_name,
+          email,
+          email_address,
+          department,
+          designation,
+          role,
+          date_of_joining,
+          contact_number,
+          employment_type,
+          registration_status,
+          created_at,
+          updated_at
+        ) VALUES (
+          gen_random_uuid(),
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          NOW(),
+          NOW()
+        ) RETURNING *`,
+        [
+          user_id || null,
+          employee_id || null,
+          finalEmployeeName,
+          first_name.trim(),
+          last_name.trim(),
+          finalEmail,
+          finalEmail,
+          department.trim(),
+          designation ? designation.trim() : null,
+          role.trim(),
+          date_of_joining || null,
+          contact_number ? contact_number.trim() : null,
+          employment_type ? employment_type.trim() : null,
+          registration_status
+        ]
+      );
+
+      if (!result.rows || result.rows.length === 0) {
+        throw new Error('Failed to create employee - no data returned');
+      }
+
+      return NextResponse.json(
+        {
+          success: true,
+          data: result.rows[0],
+          message: 'Employee created successfully'
+        },
+        { status: 201 }
+      );
+    } catch (dbError) {
+      console.error('Database error in POST /api/employees:', dbError);
+      
+      // Handle specific PostgreSQL errors
+      if (dbError.code === '23505') {
+        return NextResponse.json(
+          { success: false, error: 'Duplicate entry - employee already exists' },
+          { status: 409 }
+        );
+      }
+      
+      if (dbError.code === '23503') {
+        return NextResponse.json(
+          { success: false, error: 'Invalid reference - user_id does not exist' },
+          { status: 400 }
+        );
+      }
+
+      throw dbError;
+    }
   } catch (error) {
     console.error('Error in POST /api/employees:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to create employee' },
+      {
+        success: false,
+        error: 'Failed to create employee',
+        details: error.message
+      },
       { status: 500 }
     );
   }
